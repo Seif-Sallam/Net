@@ -1,5 +1,6 @@
 #pragma once
 #include <string>
+#include <array>
 
 #include "net/Exports.h"
 
@@ -50,16 +51,33 @@ namespace net
 		size_t size;
 	};
 
-	struct IPEndPoint
+	struct IP_Endpoint
 	{
-		std::string address;
+		std::string hostname;
+		std::string ip_string;
+		union {
+			std::array<uint8_t, 4> ipv4_bytes;
+			std::array<uint8_t, 16> ipv6_bytes;
+		};
 		unsigned short port;
+
+		enum Version
+		{
+			IPV4,
+			IPV6,
+		} version = IPV4;
 	};
+
+	NET_EXPORT IP_Endpoint
+	ip_endpoint_create(const char* ip_address, unsigned short port);
+
+	NET_EXPORT void
+	ip_endpoint_print(const IP_Endpoint& endpoint);
 
 	struct Socket
 	{
 		SOCKET handle;
-		IPEndPoint endpoint;
+		IP_Endpoint endpoint;
 
 		operator bool() const {
 			return handle != INVALID_SOCKET;
@@ -70,31 +88,25 @@ namespace net
 	socket_create();
 
 	NET_EXPORT Socket_Error
-	socket_close(Socket& socket);
+	socket_close(Socket& self);
 
 	NET_EXPORT Socket_Error
-	socket_connect(Socket& socket, const IPEndPoint& endpoint);
+	socket_connect(Socket& self, const IP_Endpoint& endpoint, size_t timeout);
 
 	NET_EXPORT Socket_Error
-	socket_bind(Socket& socket, const IPEndPoint& endpoint);
+	socket_bind(Socket& self, const IP_Endpoint& endpoint);
 
 	NET_EXPORT Socket_Error
-	socket_listen(Socket& socket, const IPEndPoint& endpoint);
+	socket_listen(Socket& self, const IP_Endpoint& endpoint);
 
-	NET_EXPORT Socket_Error
-	socket_send(Socket& socket, Block& block);
+	NET_EXPORT Result<size_t>
+	socket_send(Socket& self, Block& block);
 
-	NET_EXPORT Socket_Error
-	socket_send_all(Socket& socket, Block& block);
-
-	NET_EXPORT Socket_Error
-	socket_receive(Socket& socket, Block& block);
-
-	NET_EXPORT Socket_Error
-	socket_receive_all(Socket& socket, Block& block);
+	NET_EXPORT Result<size_t>
+	socket_receive(Socket& self, Block& block);
 
 	NET_EXPORT Result<Socket>
-	socket_accept(Socket& socket);
+	socket_accept(Socket& self, size_t timeout);
 
 	NET_EXPORT Socket_Error
 	socket_set_blocking(Socket& socket, bool blocking);
