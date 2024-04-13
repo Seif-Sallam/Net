@@ -11,30 +11,25 @@
 
 namespace net
 {
-	struct Socket_Error
+	enum Socket_Error
 	{
-		enum Error
-		{
-			NONE = 0,
-			GENERIC_ERROR,
-		} error = NONE;
-
-		operator bool() const {
-			return error == NONE;
-		}
+		NONE = 0,
+		INVALID_HANDLE,
+		GENERIC_ERROR,
 	};
 
 	template<typename T>
-	struct Result : public Socket_Error
+	struct Result
 	{
+		Socket_Error error;
 		T value;
 
 		Result() = default;
-		Result(Error error)
-			: Socket_Error{ error }
+		Result(Socket_Error error)
+			: error(error)
 		{}
 		Result(T value)
-			: Socket_Error{ NONE }, value(value)
+			: error(Socket_Error::NONE), value(value)
 		{}
 
 		operator T() const {
@@ -71,6 +66,9 @@ namespace net
 	NET_EXPORT IP_Endpoint
 	ip_endpoint_create(const char* ip_address, unsigned short port);
 
+	NET_EXPORT IP_Endpoint
+	ip_endpoint_create(sockaddr* addr);
+
 	NET_EXPORT void
 	ip_endpoint_print(const IP_Endpoint& endpoint);
 
@@ -84,7 +82,7 @@ namespace net
 		}
 	};
 
-	NET_EXPORT Socket
+	NET_EXPORT Result<Socket>
 	socket_create();
 
 	NET_EXPORT Socket_Error
@@ -97,7 +95,7 @@ namespace net
 	socket_bind(Socket& self, const IP_Endpoint& endpoint);
 
 	NET_EXPORT Socket_Error
-	socket_listen(Socket& self, const IP_Endpoint& endpoint);
+	socket_listen(Socket& self, const IP_Endpoint& endpoint, int backlog = 5);
 
 	NET_EXPORT Result<size_t>
 	socket_send(Socket& self, Block& block);

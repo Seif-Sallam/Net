@@ -12,6 +12,26 @@ namespace net
 
 	static _Winsock_Context winsock_context;
 
+	inline static sockaddr_in
+	_ip_endpoint_as_sockaddr(const IP_Endpoint& self)
+	{
+		sockaddr_in addr = {};
+		addr.sin_family = AF_INET;
+		addr.sin_port = htons(self.port);
+		memcpy(&addr.sin_addr, self.ipv4_bytes.data(), sizeof(ULONG));
+		return addr;
+	}
+
+	inline static sockaddr_in6
+	_ip_endpoint_as_sockaddr6(const IP_Endpoint& self)
+	{
+		sockaddr_in6 addr = {};
+		addr.sin6_family = AF_INET6;
+		addr.sin6_port = htons(self.port);
+		memcpy(&addr.sin6_addr, self.ipv6_bytes.data(), sizeof(ULONG));
+		return addr;
+	}
+
 	IP_Endpoint
 	ip_endpoint_create(const char* ip_address, unsigned short port)
 	{
@@ -61,6 +81,32 @@ namespace net
 		return self;
 	}
 
+	IP_Endpoint
+	ip_endpoint_create(sockaddr* addr)
+	{
+		IP_Endpoint self{};
+		if (addr->sa_family == AF_INET)
+		{
+			sockaddr_in* ipv4_addr = reinterpret_cast<sockaddr_in*>(addr);
+			self.version = IP_Endpoint::IPV4;
+			self.port = ntohs(ipv4_addr->sin_port);
+			self.ip_string.resize(16);
+			inet_ntop(AF_INET, &ipv4_addr->sin_addr, &self.ip_string[0], 16);
+			memcpy(self.ipv4_bytes.data(), &ipv4_addr->sin_addr.S_un.S_addr, sizeof(ULONG));
+		}
+		else if (addr->sa_family == AF_INET6)
+		{
+			sockaddr_in6* ipv6_addr = reinterpret_cast<sockaddr_in6*>(addr);
+			self.version = IP_Endpoint::IPV6;
+			self.port = ntohs(ipv6_addr->sin6_port);
+			self.ip_string.resize(46);
+			inet_ntop(AF_INET6, &ipv6_addr->sin6_addr, &self.ip_string[0], 46);
+			memcpy(self.ipv6_bytes.data(), &ipv6_addr->sin6_addr.u.Byte, 16);
+		}
+		self.hostname = self.ip_string;
+		return self;
+	}
+
 	void
 	ip_endpoint_print(const IP_Endpoint& self)
 	{
@@ -78,57 +124,164 @@ namespace net
 		std::cout << '\n';
 	}
 
-	Socket
+	Result<Socket>
 	socket_create()
 	{
-		return {};
+		Socket self{};
+		self.handle = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+		if (!self)
+		{
+			int error = WSAGetLastError();
+			return Socket_Error::INVALID_HANDLE;
+		}
+
+		// Disable Nagle's algorithm
+		int value = 1;
+		int res = setsockopt(self.handle, IPPROTO_TCP, TCP_NODELAY, (const char*)&value, sizeof(value));
+		if (res != 0)
+		{
+			int error = WSAGetLastError();
+			return Socket_Error::GENERIC_ERROR;
+		}
+
+		return self;
 	}
 
 	Socket_Error
 	socket_close(Socket& self)
 	{
+		if (self)
+		{
+			int res = closesocket(self.handle);
+			if (res != 0) // Error
+				return Socket_Error::GENERIC_ERROR;
+			self.handle = INVALID_SOCKET;
+		}
+		else
+		{
+			return Socket_Error::INVALID_HANDLE;
+		}
 		return {};
 	}
 
 	Socket_Error
 	socket_connect(Socket& self, const IP_Endpoint& endpoint, size_t timeout)
 	{
+		if (!self)
+			return Socket_Error::INVALID_HANDLE;
+		self.endpoint = endpoint;
+
+		sockaddr_in addr = {};
+		addr.sin_family = AF_INET;
+		addr.sin_port = htons(endpoint.port);
+		memcpy(&addr.sin_addr, endpoint.ipv4_bytes.data(), sizeof(ULONG));
+
+
 		return {};
 	}
 
 	Socket_Error
 	socket_bind(Socket& self, const IP_Endpoint& endpoint)
 	{
+		if (!self)
+			return Socket_Error::INVALID_HANDLE;
+		self.endpoint = endpoint;
+
+		sockaddr_in addr = _ip_endpoint_as_sockaddr(endpoint);
+		int result = bind(self.handle, (sockaddr*)(&addr), sizeof(sockaddr_in));
+		if (result != 0) //if an error occurred
+		{
+			int error = WSAGetLastError();
+			return Socket_Error::GENERIC_ERROR;
+		}
 		return {};
 	}
 
 	Socket_Error
-	socket_listen(Socket& self, const IP_Endpoint& endpoint)
+	socket_listen(Socket& self, const IP_Endpoint& endpoint, int backlog)
 	{
+		if (!self)
+			return Socket_Error::INVALID_HANDLE;
+
+		if (socket_bind(self, endpoint) != Socket_Error::NONE)
+			return Socket_Error::GENERIC_ERROR;
+
+		if (backlog == 0)
+			backlog = SOMAXCONN;
+
+		int result = listen(self.handle, backlog);
+		if (result != 0)
+		{
+			int error = WSAGetLastError();
+			return Socket_Error::GENERIC_ERROR;
+		}
+
 		return {};
 	}
 
 	Result<size_t>
 	socket_send(Socket& self, Block& block)
 	{
-		return {};
+		if (!self)
+			return Socket_Error::INVALID_HANDLE;
+
+		int bytes_sent = send(self.handle, block.data, block.size, 0);
+		if (bytes_sent == SOCKET_ERROR)
+		{
+			int error = WSAGetLastError();
+			return Socket_Error::GENERIC_ERROR;
+		}
+
+		return bytes_sent;
 	}
 
 	Result<size_t>
 	socket_receive(Socket& self, Block& block)
 	{
-		return {};
+		if (!self)
+			return Socket_Error::INVALID_HANDLE;
+
+		int bytes_received = recv(self.handle, block.data, block.size, 0);
+		if (bytes_received == SOCKET_ERROR)
+		{
+			int error = WSAGetLastError();
+			return Socket_Error::GENERIC_ERROR;
+		}
+
+		return bytes_received;
 	}
 
 	Result<Socket>
 	socket_accept(Socket& self, size_t timeout)
 	{
-		return {};
+		if (!self)
+			return Socket_Error::INVALID_HANDLE;
+
+		sockaddr_in addr = {};
+		int len = sizeof(sockaddr_in);
+		SOCKET conn = accept(self.handle, (sockaddr*)(&addr), &len);
+		if (conn == INVALID_SOCKET)
+		{
+			int error = WSAGetLastError();
+			return Socket_Error::GENERIC_ERROR;
+		}
+
+		IP_Endpoint conn_endpoint = ip_endpoint_create((sockaddr*)&addr);
+		Socket out_socket{};
+		out_socket.handle = conn;
+		out_socket.endpoint = conn_endpoint;
+
+		return out_socket;
 	}
 
 	Socket_Error
 	socket_set_blocking(Socket& self, bool blocking)
 	{
-		return {};
+		u_long is_blocking = (blocking) ? 0UL : 1UL;
+		int result = ioctlsocket(self.handle, FIONBIO, &is_blocking);
+		if (result == SOCKET_ERROR)
+			return Socket_Error::GENERIC_ERROR;
+
+		return Socket_Error::NONE;
 	}
 }
