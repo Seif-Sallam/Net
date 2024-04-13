@@ -21,8 +21,8 @@ namespace net
 	template<typename T>
 	struct Result
 	{
-		Socket_Error error;
 		T value;
+		Socket_Error error;
 
 		Result() = default;
 		Result(Socket_Error error)
@@ -39,9 +39,13 @@ namespace net
 
 	struct Block
 	{
-		Block(std::string data)
-			: data(data.data()), size(data.size())
+		Block(const char* data, size_t size)
+			: data(const_cast<char*>(data)), size(size)
 		{}
+		Block(const char* data)
+			: data(const_cast<char*>(data)), size(strlen(data))
+		{}
+
 		char* data;
 		size_t size;
 	};

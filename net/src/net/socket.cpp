@@ -176,6 +176,12 @@ namespace net
 		addr.sin_port = htons(endpoint.port);
 		memcpy(&addr.sin_addr, endpoint.ipv4_bytes.data(), sizeof(ULONG));
 
+		int result = connect(self.handle, (sockaddr*)(&addr), sizeof(sockaddr_in));
+		if (result != 0)
+		{
+			int error = WSAGetLastError();
+			return Socket_Error::GENERIC_ERROR;
+		}
 
 		return {};
 	}
