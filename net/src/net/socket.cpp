@@ -32,6 +32,54 @@ namespace net
 		return addr;
 	}
 
+	inline static bool
+	_socket_would_block(int error_code)
+	{
+		return error_code == WSAEWOULDBLOCK || error_code == WSAEINPROGRESS;
+	}
+
+	inline static timeval
+	_calculate_timeout_in_sec(uint32_t timeout_in_ms)
+	{
+		timeval timeout{};
+
+		if (timeout_in_ms >= 1000)
+		{
+			timeout.tv_sec = timeout_in_ms / 1000;
+			timeout_in_ms -= timeout.tv_sec * 1000;
+		}
+
+		timeout.tv_usec = timeout_in_ms * 1000;
+		return timeout;
+	}
+
+	typedef enum
+	{
+		WAIT_NONE     = 0x0,
+		WAIT_ON_WRITE = 0x1,
+		WAIT_ON_READ  = 0x2,
+	} Wait_Mode;
+
+	inline static int
+	_socket_wait_on(int64_t socket_fd, timeval* timeout, Wait_Mode mode)
+	{
+		fd_set read_set;
+		fd_set write_set;
+
+		FD_ZERO(&read_set);
+		FD_ZERO(&write_set);
+
+		if (mode & WAIT_ON_READ)
+			FD_SET(socket_fd, &read_set);
+
+		if (mode & WAIT_ON_WRITE)
+			FD_SET(socket_fd, &write_set);
+
+		int ready_sockets = ::select(socket_fd + 1, &read_set, &write_set, nullptr, timeout);
+
+		return ready_sockets;
+	}
+
 	IP_Endpoint
 	ip_endpoint_create(const char* ip_address, unsigned short port)
 	{
@@ -144,6 +192,9 @@ namespace net
 			return Socket_Error::GENERIC_ERROR;
 		}
 
+		if (socket_set_blocking(self, false) != Socket_Error::NONE)
+			return Socket_Error::GENERIC_ERROR;
+
 		return self;
 	}
 
@@ -165,7 +216,7 @@ namespace net
 	}
 
 	Socket_Error
-	socket_connect(Socket& self, const IP_Endpoint& endpoint, size_t timeout)
+	socket_connect(Socket& self, const IP_Endpoint& endpoint, uint32_t timeout)
 	{
 		if (!self)
 			return Socket_Error::INVALID_HANDLE;
@@ -176,11 +227,47 @@ namespace net
 		addr.sin_port = htons(endpoint.port);
 		memcpy(&addr.sin_addr, endpoint.ipv4_bytes.data(), sizeof(ULONG));
 
-		int result = connect(self.handle, (sockaddr*)(&addr), sizeof(sockaddr_in));
-		if (result != 0)
+		auto t = _calculate_timeout_in_sec(timeout);
+
+		for(;;)
 		{
-			int error = WSAGetLastError();
-			return Socket_Error::GENERIC_ERROR;
+			// Non blocking sockets do not connect immediately, we need to wait for the socket to become writable
+			int result = connect(self.handle, (sockaddr*)(&addr), sizeof(sockaddr_in));
+			// Will always return error in the beginning
+			if (result != -1)
+				break;
+
+			auto error_code = WSAGetLastError();
+			if (_socket_would_block(error_code) == false)
+			{
+				if (error_code == WSAEISCONN)
+					break;
+				return Socket_Error::GENERIC_ERROR;
+			}
+
+			int ready = _socket_wait_on(self.handle, &t, WAIT_ON_WRITE);
+			if (ready == 0)
+				return Socket_Error::TIMEOUT;
+
+			if (ready == SOCKET_ERROR)
+			{
+				int error = WSAGetLastError();
+				return Socket_Error::GENERIC_ERROR;
+			}
+
+			// the socket is writable now, but we need to check that SO_ERROR is set to 0, this is an
+			// indication that the connection was established successfully
+			{
+				int error_code = 0;
+				socklen_t error_len = sizeof(error_code);
+
+				int status = ::getsockopt(self.handle, SOL_SOCKET, SO_ERROR, (char*)&error_code, &error_len);
+				if (status == -1)
+					return Socket_Error::GENERIC_ERROR;
+
+				if (error_code != 0)
+					return Socket_Error::GENERIC_ERROR;
+			}
 		}
 
 		return {};
@@ -226,10 +313,22 @@ namespace net
 	}
 
 	Result<size_t>
-	socket_send(Socket& self, Block& block)
+	socket_send(Socket& self, Block& block, uint32_t timeout)
 	{
 		if (!self)
 			return Socket_Error::INVALID_HANDLE;
+
+		auto t = _calculate_timeout_in_sec(timeout);
+
+		int ready = _socket_wait_on(self.handle, &t, Wait_Mode::WAIT_ON_WRITE);
+		if (ready == -1)
+		{
+			int error = WSAGetLastError();
+			return Socket_Error::GENERIC_ERROR;
+		}
+
+		if (ready == 0)
+			return Socket_Error::TIMEOUT;
 
 		int bytes_sent = send(self.handle, block.data, block.size, 0);
 		if (bytes_sent == SOCKET_ERROR)
@@ -242,10 +341,22 @@ namespace net
 	}
 
 	Result<size_t>
-	socket_receive(Socket& self, Block& block)
+	socket_receive(Socket& self, Block& block, uint32_t timeout)
 	{
 		if (!self)
 			return Socket_Error::INVALID_HANDLE;
+
+		auto t = _calculate_timeout_in_sec(timeout);
+
+		int ready = _socket_wait_on(self.handle, &t, Wait_Mode::WAIT_ON_READ);
+		if (ready == -1)
+		{
+			int error = WSAGetLastError();
+			return Socket_Error::GENERIC_ERROR;
+		}
+
+		if (ready == 0)
+			return Socket_Error::TIMEOUT;
 
 		int bytes_received = recv(self.handle, block.data, block.size, 0);
 		if (bytes_received == SOCKET_ERROR)
@@ -258,26 +369,43 @@ namespace net
 	}
 
 	Result<Socket>
-	socket_accept(Socket& self, size_t timeout)
+	socket_accept(Socket& self, uint32_t timeout)
 	{
 		if (!self)
 			return Socket_Error::INVALID_HANDLE;
 
+		auto t = _calculate_timeout_in_sec(timeout);
+
 		sockaddr_in addr = {};
 		int len = sizeof(sockaddr_in);
-		SOCKET conn = accept(self.handle, (sockaddr*)(&addr), &len);
-		if (conn == INVALID_SOCKET)
+		for(;;)
 		{
-			int error = WSAGetLastError();
-			return Socket_Error::GENERIC_ERROR;
+			SOCKET conn = accept(self.handle, (sockaddr*)(&addr), &len);
+			if (conn != INVALID_SOCKET)
+			{
+				IP_Endpoint conn_endpoint = ip_endpoint_create((sockaddr*)&addr);
+				Socket out_socket{};
+				out_socket.handle = conn;
+				out_socket.endpoint = conn_endpoint;
+				return out_socket;
+			}
+
+			auto error_code = WSAGetLastError();
+			if (_socket_would_block(error_code) == false)
+				return Socket_Error::GENERIC_ERROR;
+
+			int ready = _socket_wait_on(self.handle, &t, WAIT_ON_READ);
+			if (ready == 0)
+				return Socket_Error::TIMEOUT;
+
+			if (ready == SOCKET_ERROR)
+			{
+				int error = WSAGetLastError();
+				return Socket_Error::GENERIC_ERROR;
+			}
 		}
 
-		IP_Endpoint conn_endpoint = ip_endpoint_create((sockaddr*)&addr);
-		Socket out_socket{};
-		out_socket.handle = conn;
-		out_socket.endpoint = conn_endpoint;
-
-		return out_socket;
+		return {};
 	}
 
 	Socket_Error

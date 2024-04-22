@@ -16,6 +16,7 @@ namespace net
 		NONE = 0,
 		INVALID_HANDLE,
 		GENERIC_ERROR,
+		TIMEOUT,
 	};
 
 	template<typename T>
@@ -93,7 +94,7 @@ namespace net
 	socket_close(Socket& self);
 
 	NET_EXPORT Socket_Error
-	socket_connect(Socket& self, const IP_Endpoint& endpoint, size_t timeout);
+	socket_connect(Socket& self, const IP_Endpoint& endpoint, uint32_t timeout);
 
 	NET_EXPORT Socket_Error
 	socket_bind(Socket& self, const IP_Endpoint& endpoint);
@@ -102,13 +103,13 @@ namespace net
 	socket_listen(Socket& self, const IP_Endpoint& endpoint, int backlog = 5);
 
 	NET_EXPORT Result<size_t>
-	socket_send(Socket& self, Block& block);
+	socket_send(Socket& self, Block& block, uint32_t timeout);
 
 	NET_EXPORT Result<size_t>
-	socket_receive(Socket& self, Block& block);
+	socket_receive(Socket& self, Block& block, uint32_t timeout);
 
 	NET_EXPORT Result<Socket>
-	socket_accept(Socket& self, size_t timeout);
+	socket_accept(Socket& self, uint32_t timeout);
 
 	NET_EXPORT Socket_Error
 	socket_set_blocking(Socket& socket, bool blocking);
